@@ -3,8 +3,10 @@ defmodule AsyncList do
     use TypedStruct
 
     typedstruct do
-      field :value, String.t, enforce: true
+      field :host, String.t, enforce: true
     end
+
+    def new(host), do: struct!(__MODULE__, host: host)
   end
 
   defmodule UriContent do
@@ -23,5 +25,18 @@ defmodule AsyncList do
     typedstruct do
       field :value, {SystemURI, non_neg_integer}, enforce: true
     end
+  end
+
+  # Get the contents of the page at the given Uri
+  @spec get_uri_content(SystemUri.t) :: Task.t
+  def get_uri_content(uri) do
+    import ExPrintf
+     printf "[%s] Started ...", [uri.host]
+  end
+
+  def try do
+    "http://google.com"
+    |> SystemUri.new()
+    |> get_uri_content()
   end
 end
