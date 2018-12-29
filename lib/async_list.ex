@@ -48,12 +48,28 @@ defmodule AsyncList do
     end
   end
 
+  defmodule Async do
+    use TypedStruct
+
+    typedstruct do
+      field :value, (... -> any), enforce: true
+    end
+
+    def new(fun) do
+      struct!(__MODULE__, value: fun)
+    end
+
+    def run_synchronously(async) do
+      async.value.()
+    end
+  end
+
   import ExPrintf
 
   # Get the contents of the page at the given Uri
   @spec get_uri_content(SystemUri.t) :: Task.t
   def get_uri_content(uri) do
-    Task.async(fn ->
+    Async.new(fn ->
       printf "[%s] Started ...\n", [uri.host]
       with {:ok, html} <- WebClient.download_string(uri) do
         printf "[%s] ... finished\n", [uri.host]
@@ -76,7 +92,7 @@ defmodule AsyncList do
     "http://google.com"
     |> SystemUri.new()
     |> get_uri_content()
-    |> Task.await
+    |> Async.run_synchronously
     |> show_content_result
   end
 
@@ -84,7 +100,7 @@ defmodule AsyncList do
     "http://example.bad"
     |> SystemUri.new()
     |> get_uri_content()
-    |> Task.await
+    |> Async.run_synchronously
     |> show_content_result
   end
 end
