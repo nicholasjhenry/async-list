@@ -31,12 +31,16 @@ defmodule AsyncList do
   @spec get_uri_content(SystemUri.t) :: Task.t
   def get_uri_content(uri) do
     import ExPrintf
-     printf "[%s] Started ...", [uri.host]
+
+    Task.async(fn ->
+      printf "[%s] Started ...", [uri.host]
+    end)
   end
 
   def try do
     "http://google.com"
     |> SystemUri.new()
     |> get_uri_content()
+    |> Task.await
   end
 end
