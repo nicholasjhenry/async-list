@@ -1,8 +1,18 @@
 defmodule AsyncList do
 
   defmodule Result do
+    @type t(term) :: {:ok, term} :: {:error, term}
+
     def success(term), do: {:ok, term}
     def failure(term), do: {:error, term}
+
+    def bind(result, fun) do
+      case result do
+        {:ok, term} ->
+          fun.(term)
+        other -> other
+      end
+    end
   end
 
   defmodule WebClient do
@@ -46,6 +56,10 @@ defmodule AsyncList do
     typedstruct do
       field :value, {SystemURI, non_neg_integer}, enforce: true
     end
+
+    def new(uri, len) do
+      struct!(__MODULE__, value: {uri, len})
+    end
   end
 
   defmodule Async do
@@ -62,7 +76,7 @@ defmodule AsyncList do
     def map(xasync, f) do
       Async.return(fn ->
         # get the contents of xasync
-        x = xasync.fun.()
+        x = xasync.value.()
         # apply the function and lift the result
         f.(x)
       end)
@@ -90,7 +104,7 @@ defmodule AsyncList do
 
     def bind(xasync, f) do
       # get the contents of xAsync
-      x = xasync
+      x = xasync.value
       # apply the function but don't lift the result
       # as f will return an Async
       f.(x)
@@ -100,7 +114,7 @@ defmodule AsyncList do
   import ExPrintf
 
   # Get the contents of the page at the given Uri
-  @spec get_uri_content(SystemUri.t) :: Task.t
+  @spec get_uri_content(SystemUri.t) :: Async.t
   def get_uri_content(uri) do
     Async.return(fn ->
       printf "[%s] Started ...\n", [uri.host]
@@ -112,6 +126,29 @@ defmodule AsyncList do
     end)
   end
 
+  # Make a UriContentSize from a UriContent
+  @spec make_content_size(UriContent.t) :: Result.t(UriContentSize.t)
+  def make_content_size(%UriContent{value: {uri, html}}) do
+    if is_nil(html) do
+      Result.failure(["empty page"])
+    else
+      uri_content_size = UriContentSize.new(uri, String.length(html))
+      Result.success(uri_content_size)
+    end
+  end
+
+  # Get the size of the contents of the page at the given Uri
+  @spec get_uri_content_size(SystemUri.t) :: Async.t(Result.t(UriContentSize.t))
+  def get_uri_content_size(uri) do
+    uri
+    |> get_uri_content
+    |> Async.map(bind_result(&make_content_size/1))
+  end
+
+  defp bind_result(fun) do
+    fn(result) -> Result.bind(result, fun) end
+  end
+
   def show_content_result(result) do
     case result do
       {:ok, %{value: {uri, html}}} ->
@@ -121,19 +158,28 @@ defmodule AsyncList do
     end
   end
 
+  def show_content_size_result(result) do
+    case result do
+      {:ok, %{value: {uri, len}}} ->
+        printf "SUCCESS: [%s] Content size is %i\n", [uri.host, len]
+      {:error, errors} ->
+        printf "FAILURE: %s\n", [errors]
+    end
+  end
+
   def try_happy do
     "http://google.com"
     |> SystemUri.new()
-    |> get_uri_content()
+    |> get_uri_content_size
     |> Async.run_synchronously
-    |> show_content_result
+    |> show_content_size_result
   end
 
   def try_bad do
     "http://example.bad"
     |> SystemUri.new()
-    |> get_uri_content()
+    |> get_uri_content_size
     |> Async.run_synchronously
-    |> show_content_result
+    |> show_content_size_result
   end
 end
