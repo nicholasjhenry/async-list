@@ -55,12 +55,45 @@ defmodule AsyncList do
       field :value, (... -> any), enforce: true
     end
 
-    def new(fun) do
-      struct!(__MODULE__, value: fun)
-    end
-
     def run_synchronously(async) do
       async.value.()
+    end
+
+    def map(xasync, f) do
+      Async.return(fn ->
+        # get the contents of xasync
+        x = xasync.fun.()
+        # apply the function and lift the result
+        f.(x)
+      end)
+    end
+
+    def return(x) do
+      # lift x to an Async
+      struct!(__MODULE__, value: x)
+    end
+
+    def apply(fasync, xasync) do
+      Async.return(fn ->
+        # start the two asyncs in parallel
+        fchild = Task.async(fasync)
+        xchild = Task.async(xasync)
+
+        # wait for the results
+        f = Task.await(fchild)
+        x = Task.await(xchild)
+
+        # apply the function to the results
+        return f.(x)
+      end)
+    end
+
+    def bind(xasync, f) do
+      # get the contents of xAsync
+      x = xasync
+      # apply the function but don't lift the result
+      # as f will return an Async
+      f.(x)
     end
   end
 
@@ -69,7 +102,7 @@ defmodule AsyncList do
   # Get the contents of the page at the given Uri
   @spec get_uri_content(SystemUri.t) :: Task.t
   def get_uri_content(uri) do
-    Async.new(fn ->
+    Async.return(fn ->
       printf "[%s] Started ...\n", [uri.host]
       with {:ok, html} <- WebClient.download_string(uri) do
         printf "[%s] ... finished\n", [uri.host]
