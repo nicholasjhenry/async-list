@@ -3,16 +3,53 @@ defmodule AsyncList do
   defmodule Result do
     @type t(term) :: {:ok, term} :: {:error, term}
 
+    use Currying
+
     def success(term), do: {:ok, term}
     def failure(term), do: {:error, term}
 
-    def bind(result, fun) do
-      case result do
-        {:ok, term} ->
-          fun.(term)
-        other -> other
+    def map(x_result, f) do
+      case x_result do
+        {:ok, x} ->
+          success(curry(f).(x))
+        {:error, errors} ->
+          failure(errors)
+        end
+    end
+
+    def f <|> x_result do
+       map(x_result, f)
+     end
+
+    def return(x) do
+      success(x)
+    end
+
+    def ap(x_result, f_result) do
+      case {f_result, x_result} do
+        {{:ok, f}, {:ok, x}} ->
+          return(curry(f).(x))
+        {{:error, errs}, {:ok, _x}} ->
+          failure(errs)
+        {{:ok, _f}, {:error, errs}} ->
+          failure(errs)
+        {{:error, errs_1}, {:error, errs_2}} ->
+          failure(Enum.concat(List.wrap(errs_1), List.wrap(errs_2)))
       end
     end
+
+    def result_f <<~ result_x, do: ap(result_x, result_f)
+
+    def bind(result_x, f) do
+      case result_x do
+        {:ok, x} ->
+          curry(f).(x)
+        {:error, errs} ->
+          failure(errs)
+      end
+    end
+
+    def result_x >>> f, do: bind(result_x, f)
   end
 
   defmodule WebClient do
@@ -21,7 +58,7 @@ defmodule AsyncList do
         {:ok, response} ->
           Result.success(response.body)
         {:error, error} ->
-          Result.failure(error.reason)
+          Result.failure("#{uri.host} => #{error.reason}")
       end
     end
   end
@@ -64,6 +101,7 @@ defmodule AsyncList do
 
   defmodule Async do
     use TypedStruct
+    use Currying
 
     typedstruct do
       field :value, (... -> any), enforce: true
@@ -73,42 +111,84 @@ defmodule AsyncList do
       async.value.()
     end
 
-    def map(xasync, f) do
-      Async.return(fn ->
-        # get the contents of xasync
-        x = xasync.value.()
+    def map(x_async, f) do
+      return(fn ->
+        # get the contents of x_async (i.e. run it and await the result)
+        x = run_synchronously(x_async)
+
         # apply the function and lift the result
         f.(x)
       end)
     end
 
-    def return(x) do
+    def return(x) when is_function(x) do
       # lift x to an Async
       struct!(__MODULE__, value: x)
     end
 
-    def apply(fasync, xasync) do
-      Async.return(fn ->
-        # start the two asyncs in parallel
-        fchild = Task.async(fasync)
-        xchild = Task.async(xasync)
-
-        # wait for the results
-        f = Task.await(fchild)
-        x = Task.await(xchild)
-
-        # apply the function to the results
-        return f.(x)
-      end)
+    def return(x) do
+      # lift x to an Async
+      struct!(__MODULE__, value: fn -> x end)
     end
 
-    def bind(xasync, f) do
+    def ap(x_async, f_async) do
+      x_result = run_synchronously(x_async)
+
+      return(curry(f_async.value).(x_result))
+    end
+
+    def f_async <<~ x_async, do: ap(x_async, f_async)
+
+    def bind(x_async, f) do
       # get the contents of xAsync
-      x = xasync.value
+      x = run_synchronously(x_async)
       # apply the function but don't lift the result
       # as f will return an Async
       f.(x)
     end
+  end
+
+  defmodule List do
+    @type a :: any
+    @type b :: any
+
+    def id(x), do: x
+
+    # Map a Async producing function over a list to get a new Async
+    # using applicative style
+    @spec traverse_async_a([a], (a -> Async.t(b))) :: Async.t([b])
+    def traverse_async_a(list, f) do
+      use Currying
+      import Async, only: [return: 1, "<<~": 2]
+      # right fold over the list
+      init_state = return([])
+      folder = fn(head, tail) -> return(&cons/2) <<~ f.(head) <<~ tail end
+
+      Elixir.List.foldr(list, init_state, folder)
+    end
+
+    # Transform a "[Async.t]" into a "Async.t([...])"
+    # and collect the results using apply.
+    def sequence_async_a(x), do: traverse_async_a(x, &id/1)
+
+    # Map a Async producing function over a list to get a new Async
+    # using applicative style
+    @spec traverse_result_a([a], (a -> Result.t(b))) :: Result.t([b])
+    def traverse_result_a(list, f) do
+      import Result, only: [return: 1, "<<~": 2]
+      # right fold over the list
+      init_state = return([])
+      folder = fn(head, tail) -> return(&cons/2) <<~ f.(head) <<~ tail end
+
+      Elixir.List.foldr(list, init_state, folder)
+    end
+
+    # Transform a "[Result.t]" into a "Result.t([...])"
+    # and collect the results using apply.
+    def sequence_result_a(x), do: traverse_result_a(x, &id/1)
+
+    # define a "cons" function
+    defp cons(head, tail), do: [head | tail]
   end
 
   import ExPrintf
@@ -163,22 +243,67 @@ defmodule AsyncList do
       {:ok, %{value: {uri, len}}} ->
         printf "SUCCESS: [%s] Content size is %i\n", [uri.host, len]
       {:error, errors} ->
-        printf "FAILURE: %s\n", [errors]
+        printf "FAILURE: %s\n", [Enum.join(Elixir.List.wrap(errors), ", ")]
     end
   end
 
+  # Get the largest UriContentSize from a list
+  @spec max_content_size(UriContentSize.t(list)) :: UriContentSize.t
+  def max_content_size(list) do
+
+    # extract the len field from a UriContentSize
+    contentSize = fn %UriContentSize{value: {_, len}} -> len end
+
+    # use maxBy to find the largest
+    list |> Enum.max_by(contentSize)
+  end
+
+  # Get the largest page size from a list of websites
+  def largest_page_size_a(urls) do
+    urls
+    # turn the list of strings into a list of Uris
+    |> Enum.map(&SystemUri.new/1)
+
+    # turn the list of Uris into a "[Async.t(Result.t(UriContentSize.t))]"
+    |> Enum.map(&get_uri_content_size/1)
+
+    # turn the "[Async.t(Result.t(UriContentSize.t))]"
+    # into an "Async.t([Result.t(UriContentSize.t)])"
+    |> List.sequence_async_a
+
+    # turn the "Async.t([Result.t(UriContentSize.t)])"
+    # into a "Async.t(Result.t([UriContentSize.t]))"
+    |> Async.map(&List.sequence_result_a/1)
+
+    # find the largest in the inner list to get
+    # a "Async.t(Result.t(UriContentSize.t))"
+    |> Async.map(map_result(&max_content_size/1))
+  end
+
+  defp map_result(f) do
+    fn(x) -> Result.map(x, f) end
+  end
+
   def try_happy do
-    "http://google.com"
-    |> SystemUri.new()
-    |> get_uri_content_size
+    [
+      "http://google.com",
+      "http://bbc.co.uk",
+      "http://fsharp.org",
+      "http://microsoft.com"
+    ]
+    |> largest_page_size_a
     |> Async.run_synchronously
     |> show_content_size_result
   end
 
   def try_bad do
-    "http://example.bad"
-    |> SystemUri.new()
-    |> get_uri_content_size
+    [
+      "http://example.com/nopage",
+      "http://bad.example.com",
+      "http://verybad.example.com",
+      "http://veryverybad.example.com"
+    ]
+    |> largest_page_size_a
     |> Async.run_synchronously
     |> show_content_size_result
   end

@@ -21,6 +21,7 @@ defmodule AsyncList.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:currying, "~> 1.0.3"},
       {:exprintf, "~> 0.2.1"},
       {:typed_struct, "~> 0.1.4"},
       {:httpoison, "~> 1.4"}
