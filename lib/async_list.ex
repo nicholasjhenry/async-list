@@ -132,10 +132,29 @@ defmodule AsyncList do
     end
 
     def ap(x_async, f_async) do
-      x_result = run_synchronously(x_async)
+      import Task, only: [await: 1]
 
-      return(curry(f_async.value).(x_result))
+      return(fn ->
+        x_child = start_child(x_async)
+        f_child = start_child(f_async)
+
+        x = await(x_child)
+        f = await(f_child)
+
+        f.(x)
+      end)
     end
+
+    defp start_child(async) do
+      async |> get_fun |> Task.async()
+    end
+
+    # Gets the function from Async.t. If the function has an arity of 0 then the function
+    # can be passed directly to Task. If not, then wrap it inside of a function/0 so it
+    # can be passed to Task. As well, ensure the function is curried so it can be
+    # partially applied.
+    defp get_fun(%{value: f}) when is_function(f, 0), do: f
+    defp get_fun(%{value: f}), do: fn -> curry(f) end
 
     def f_async <<~ x_async, do: ap(x_async, f_async)
 
